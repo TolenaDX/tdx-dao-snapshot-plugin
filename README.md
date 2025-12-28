@@ -1,2 +1,4 @@
-# tdx-dao-snapshot-plugin
-WordPress plugin for integrating DAO governance with Snapshot.  Supports proposal listing, inline voting, wallet connection, and multi-chain networks.
+# TDX Snapshot Suite
+
+A WordPress plugin for DAO governance powered by Snapshot.
+It enables proposal listing and secure wallet-based voting directly inside WordPress.
