@@ -1,0 +1,322 @@
+```php
+<?php
+/**
+ * Plugin Name: TDX Snapshot Suite
+ * Description: Display Snapshot proposals and enable inline voting (Snapshot Hub). Shortcode: [tdx_snapshot space="tolena.eth" limit="9"]
+ * Version: 2.3.1
+ * Author: Tolena Digital Exchange - Athar Ardestani
+ */
+
+if (!defined('ABSPATH')) {
+  exit;
+}
+
+/* =========================================================
+ * Settings registration (minimal: Space / Limit / Hub)
+ * =======================================================*/
+
+/**
+ * Register plugin options and settings group.
+ */
+function tdx_snapshot_register_settings() {
+  // Default options
+  add_option('tdx_snapshot_space', 'tolena.eth');
+  add_option('tdx_snapshot_limit', 9);
+  add_option('tdx_snapshot_hub', 'https://hub.snapshot.org');
+
+  // Optional: ERC-20 token config to display user balance (TDX)
+  add_option('tdx_snapshot_token_address', '');
+  add_option('tdx_snapshot_token_symbol', 'TDX');
+  add_option('tdx_snapshot_token_decimals', 18);
+
+  // Register settings
+  register_setting('tdx_snapshot_options_group', 'tdx_snapshot_space');
+  register_setting('tdx_snapshot_options_group', 'tdx_snapshot_limit');
+  register_setting('tdx_snapshot_options_group', 'tdx_snapshot_hub');
+
+  register_setting('tdx_snapshot_options_group', 'tdx_snapshot_token_address');
+  register_setting('tdx_snapshot_options_group', 'tdx_snapshot_token_symbol');
+  register_setting('tdx_snapshot_options_group', 'tdx_snapshot_token_decimals');
+}
+add_action('admin_init', 'tdx_snapshot_register_settings');
+
+/**
+ * Add Settings -> TDX Snapshot menu item.
+ */
+function tdx_snapshot_register_menu() {
+  add_options_page(
+    'TDX Snapshot',
+    'TDX Snapshot',
+    'manage_options',
+    'tdx-snapshot',
+    'tdx_snapshot_options_page'
+  );
+}
+add_action('admin_menu', 'tdx_snapshot_register_menu');
+
+/**
+ * Render the options page.
+ */
+function tdx_snapshot_options_page() { ?>
+  <div class="wrap">
+    <h1>TDX Snapshot — Settings</h1>
+
+    <form method="post" action="options.php">
+      <?php settings_fields('tdx_snapshot_options_group'); ?>
+
+      <table class="form-table" role="presentation">
+        <tr>
+          <th><label for="tdx_snapshot_space">Space</label></th>
+          <td>
+            <input
+              id="tdx_snapshot_space"
+              name="tdx_snapshot_space"
+              class="regular-text"
+              value="<?php echo esc_attr(get_option('tdx_snapshot_space', 'tolena.eth')); ?>"
+            />
+            <p class="description">Example: <code>tolena.eth</code></p>
+          </td>
+        </tr>
+
+        <tr>
+          <th><label for="tdx_snapshot_limit">Items limit</label></th>
+          <td>
+            <input
+              type="number"
+              min="1"
+              max="50"
+              id="tdx_snapshot_limit"
+              name="tdx_snapshot_limit"
+              value="<?php echo (int) get_option('tdx_snapshot_limit', 9); ?>"
+            />
+          </td>
+        </tr>
+
+        <tr>
+          <th><label for="tdx_snapshot_hub">Hub URL</label></th>
+          <td>
+            <input
+              id="tdx_snapshot_hub"
+              name="tdx_snapshot_hub"
+              class="regular-text"
+              value="<?php echo esc_attr(get_option('tdx_snapshot_hub', 'https://hub.snapshot.org')); ?>"
+            />
+            <p class="description">GraphQL endpoint is: <code>/graphql</code></p>
+          </td>
+        </tr>
+
+        <tr>
+          <th><label for="tdx_snapshot_token_address">TDX Token (optional)</label></th>
+          <td>
+            <input
+              id="tdx_snapshot_token_address"
+              name="tdx_snapshot_token_address"
+              class="regular-text"
+              value="<?php echo esc_attr(get_option('tdx_snapshot_token_address', '')); ?>"
+            />
+            <p class="description">
+              If you want to display the connected user's TDX balance, set the ERC-20 contract address here.
+            </p>
+          </td>
+        </tr>
+
+        <tr>
+          <th><label for="tdx_snapshot_token_symbol">Symbol</label></th>
+          <td>
+            <input
+              id="tdx_snapshot_token_symbol"
+              name="tdx_snapshot_token_symbol"
+              value="<?php echo esc_attr(get_option('tdx_snapshot_token_symbol', 'TDX')); ?>"
+            />
+          </td>
+        </tr>
+
+        <tr>
+          <th><label for="tdx_snapshot_token_decimals">Decimals</label></th>
+          <td>
+            <input
+              type="number"
+              id="tdx_snapshot_token_decimals"
+              name="tdx_snapshot_token_decimals"
+              value="<?php echo (int) get_option('tdx_snapshot_token_decimals', 18); ?>"
+            />
+          </td>
+        </tr>
+      </table>
+
+      <?php submit_button(); ?>
+    </form>
+  </div>
+<?php }
+
+/* =========================================================
+ * Admin notice: warn if local Snapshot UMD is missing
+ * =======================================================*/
+
+/**
+ * Display an admin notice when snapshot.min.js is not found locally.
+ */
+add_action('admin_notices', function () {
+  if (!current_user_can('manage_options')) {
+    return;
+  }
+
+  $vendor = plugin_dir_path(__FILE__) . 'assets/vendor/snapshot.min.js';
+  if (!file_exists($vendor)) {
+    echo '<div class="notice notice-error"><p><strong>TDX Snapshot:</strong> Missing <code>assets/vendor/snapshot.min.js</code>. Please copy the UMD build from Snapshot.js into that path.</p></div>';
+  }
+});
+
+/* =========================================================
+ * Script handling: remove ethers v6 and enforce load order:
+ * ethers v5 → snapshot UMD → app.js
+ * =======================================================*/
+
+/**
+ * Dequeue/deregister any enqueued ethers v6 scripts (to prevent conflicts).
+ * Runs early to remove scripts injected by themes/other plugins.
+ */
+add_action('wp_enqueue_scripts', function () {
+  global $wp_scripts;
+
+  if (!$wp_scripts || empty($wp_scripts->registered)) {
+    return;
+  }
+
+  foreach ($wp_scripts->registered as $handle => $obj) {
+    $src = isset($obj->src) ? (string) $obj->src : '';
+
+    $is_ethers_v6 =
+      preg_match('~/(ethers(@|%40)?6|ethers-?6)[^/]*\.js~i', $src) ||
+      preg_match('~cdn\.jsdelivr\.net/.*/ethers@6~i', $src) ||
+      preg_match('~unpkg\.com/.*/ethers@6~i', $src);
+
+    if ($is_ethers_v6) {
+      wp_dequeue_script($handle);
+      wp_deregister_script($handle);
+    }
+  }
+}, 5);
+
+/**
+ * Enqueue plugin assets in the required order.
+ */
+add_action('wp_enqueue_scripts', function () {
+  $ver = '2.3.0'; // Cache buster for CSS/JS
+
+  // UI styles
+  wp_enqueue_style(
+    'tdx-snapshot-css',
+    plugins_url('assets/styles.css', __FILE__),
+    [],
+    $ver
+  );
+
+  // 1) ethers v5 (footer)
+  wp_register_script(
+    'tdx-ethers-umd',
+    'https://cdn.jsdelivr.net/npm/ethers@5.7.2/dist/ethers.umd.min.js',
+    [],
+    '5.7.2',
+    true
+  );
+  wp_enqueue_script('tdx-ethers-umd');
+
+  // 2) Snapshot UMD (local), depends on ethers v5
+  wp_register_script(
+    'tdx-snapshot-umd',
+    plugins_url('assets/vendor/snapshot.min.js', __FILE__),
+    ['tdx-ethers-umd'],
+    '0.11.x',
+    true
+  );
+  wp_enqueue_script('tdx-snapshot-umd');
+
+  // 3) Plugin app.js, depends on both ethers and snapshot
+  wp_register_script(
+    'tdx-snapshot-app',
+    plugins_url('assets/app.js', __FILE__),
+    ['tdx-ethers-umd', 'tdx-snapshot-umd'],
+    $ver,
+    true
+  );
+  wp_enqueue_script('tdx-snapshot-app');
+
+  // Build optional token configuration (empty means: do not show balance)
+  $token = [];
+  $addr = trim((string) get_option('tdx_snapshot_token_address', ''));
+
+  if ($addr !== '') {
+    $token = [
+      'address'  => $addr,
+      'symbol'   => (string) get_option('tdx_snapshot_token_symbol', 'TDX'),
+      'decimals' => (int) get_option('tdx_snapshot_token_decimals', 18),
+    ];
+  }
+
+  // Pass runtime config to JavaScript
+  wp_localize_script('tdx-snapshot-app', 'TDX_SNAPSHOT_CFG', [
+    'hub'   => rtrim((string) get_option('tdx_snapshot_hub', 'https://hub.snapshot.org'), '/'),
+    'space' => (string) get_option('tdx_snapshot_space', 'tolena.eth'),
+    'token' => $token,
+  ]);
+}, 50);
+
+/* =========================================================
+ * Shortcode: [tdx_snapshot space="tolena.eth" limit="9"]
+ * =======================================================*/
+
+/**
+ * Render proposals list and wallet/voting UI.
+ *
+ * @param array $atts Shortcode attributes.
+ * @return string HTML output.
+ */
+function tdx_snapshot_shortcode($atts) {
+  $a = shortcode_atts([
+    'space' => get_option('tdx_snapshot_space', 'tolena.eth'),
+    'limit' => get_option('tdx_snapshot_limit', 9),
+  ], $atts, 'tdx_snapshot');
+
+  ob_start(); ?>
+  <div class="tdx-snapshot-wrap"
+       data-space="<?php echo esc_attr($a['space']); ?>"
+       data-limit="<?php echo (int) $a['limit']; ?>">
+    <div class="tdx-snapshot-header">
+      <div class="tdx-hl">
+        <h3>DAO Proposals</h3>
+        <small>Space: <b><?php echo esc_html($a['space']); ?></b></small>
+      </div>
+      <div class="tdx-wallet">
+        <button class="tdx-btn-primary" data-connect>🔗 Connect Wallet</button>
+        <span class="tdx-wallet-info" hidden></span>
+      </div>
+    </div>
+    <div class="tdx-snapshot-list">Loading proposals…</div>
+  </div>
+  <?php
+  return ob_get_clean();
+}
+add_shortcode('tdx_snapshot', 'tdx_snapshot_shortcode');
+
+/* =========================================================
+ * Optional: debug log ethers version on the frontend
+ * =======================================================*/
+
+/**
+ * Log ethers version and presence of _signTypedData in the browser console.
+ */
+add_action('wp_footer', function () {
+  if (is_admin()) {
+    return;
+  } ?>
+  <script>
+    (function () {
+      var ok = !!window.ethers;
+      var v  = ok ? (ethers.version || 'unknown') : 'none';
+      var hasV5Sign = !!(window.ethers && ethers.Signer && ethers.Signer.prototype && ethers.Signer.prototype._signTypedData);
+      console.log('%c[TDX] Ethers:', 'color:#22c55e', v, '| _signTypedData:', hasV5Sign ? 'OK' : 'MISSING');
+    })();
+  </script>
+<?php }, 99);
+```
